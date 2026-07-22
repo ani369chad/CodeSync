@@ -1,0 +1,85 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: codesync-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-codesync}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-codesync}
+      POSTGRES_DB: ${POSTGRES_DB:-codesync}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-codesync}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: codesync-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    container_name: codesync-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-codesync}:${POSTGRES_PASSWORD:-codesync}@postgres:5432/${POSTGRES_DB:-codesync}
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+
+  yjs-websocket:
+    build:
+      context: ./websocket-server
+    container_name: codesync-yjs
+    restart: unless-stopped
+    environment:
+      PORT: 1234
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "1234:1234"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: codesync-frontend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+      VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:8000}
+      VITE_YJS_WS_URL: ${VITE_YJS_WS_URL:-ws://localhost:1234}
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+      - yjs-websocket
+
+volumes:
+  postgres_data:
